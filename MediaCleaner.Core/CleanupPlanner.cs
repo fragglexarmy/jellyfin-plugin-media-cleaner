@@ -21,7 +21,24 @@ public sealed class CleanupPlanner(IClock clock, IPathMatcher pathMatcher, IExtr
         var deleteMatches = request.IsDryRun ? new List<RuleMatch>() : null;
         var protectMatches = request.IsDryRun ? new List<RuleMatch>() : null;
         var decisionAccumulator = request.IsDryRun ? null : new DeleteDecisionAccumulator();
-        var protectedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var protectedIds = catalog.ItemsById.Values
+            .Where(item => item.Playback.Any(playback => playback.IsWatching))
+            .Select(item => item.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (request.IsDryRun)
+        {
+            foreach (var item in catalog.ItemsById.Values.Where(item => protectedIds.Contains(item.Id)))
+            {
+                CleanupAudit.AddItem(
+                    audit,
+                    item,
+                    null,
+                    CleanupAuditStage.Protection,
+                    CleanupAuditOutcome.Protected,
+                    $"protected because the item is currently being watched");
+            }
+        }
 
         foreach (var rule in enabledRules)
         {

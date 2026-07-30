@@ -852,13 +852,18 @@ function readPlaybackSettings(card, rule, page) {
 }
 
 function renderDeletionBehavior(rule) {
-    const exceptionDescription = rule.Filters.DeleteEpisodes === 'Season'
+    const exceptionDescription = rule.Filters.KeepSeriesKind === 'LatestWatched'
+        ? 'The exception is chosen using playback by the users included in this rule, across every episode in the series. Cleanup is blocked when it cannot be identified safely. Media currently being watched is always protected independently of this setting.'
+        : rule.Filters.DeleteEpisodes === 'Season'
         ? 'The exception is chosen from every season in the series, even when that season does not match this rule. Cleanup is blocked when it cannot be identified safely.'
         : 'The exception is chosen from every episode in the series, even when that episode does not match this rule. Cleanup is blocked when it cannot be identified safely.'
+    const keepOptions = rule.Filters.DeleteEpisodes === 'Episode'
+        ? ['None', 'First', 'Last', 'LatestWatched']
+        : ['None', 'First', 'Last']
     const episodeControls = isEpisodeOnly(rule)
         ? selectHtml('DeleteEpisodes', 'Episode deletion scope', rule.Filters.DeleteEpisodes, ['Episode', 'Season', 'Series', 'SeriesEnded'])
             + (['Episode', 'Season'].includes(rule.Filters.DeleteEpisodes)
-                ? selectHtml('KeepSeriesKind', rule.Filters.DeleteEpisodes === 'Season' ? 'Season exception' : 'Episode exception', rule.Filters.KeepSeriesKind, ['None', 'First', 'Last'])
+                ? selectHtml('KeepSeriesKind', rule.Filters.DeleteEpisodes === 'Season' ? 'Season exception' : 'Episode exception', rule.Filters.KeepSeriesKind, keepOptions)
                     + `<div class="fieldDescription">${exceptionDescription}</div>`
                 : '')
         : ''
@@ -877,9 +882,12 @@ function readDeletionBehavior(card, rule) {
     }
 
     rule.Filters.DeleteEpisodes = readField(card, 'DeleteEpisodes', 'Episode')
-    rule.Filters.KeepSeriesKind = ['Episode', 'Season'].includes(rule.Filters.DeleteEpisodes)
+    const keepSeriesKind = ['Episode', 'Season'].includes(rule.Filters.DeleteEpisodes)
         ? readField(card, 'KeepSeriesKind', 'None')
         : 'None'
+    rule.Filters.KeepSeriesKind = keepSeriesKind === 'LatestWatched' && rule.Filters.DeleteEpisodes !== 'Episode'
+        ? 'None'
+        : keepSeriesKind
 }
 
 function deletionBehaviorSummary(rule) {
@@ -971,6 +979,7 @@ function triggerDaysLabel(kind) {
 function episodeScopeWithPreservedItem(summary, filters, itemKind) {
     if (filters.KeepSeriesKind === 'First') return `${summary}, excluding the first ${itemKind} in the series, whether or not it matches this rule`
     if (filters.KeepSeriesKind === 'Last') return `${summary}, excluding the latest ${itemKind} in the series, whether or not it matches this rule`
+    if (filters.KeepSeriesKind === 'LatestWatched') return `${summary}, excluding the latest watched ${itemKind} in the series`
     return summary
 }
 
@@ -1154,6 +1163,10 @@ function episodeScopeSentence(filters) {
         return 'Delete matching episodes individually, except the latest episode in the series, whether or not it matches this rule'
     }
 
+    if (filters.KeepSeriesKind === 'LatestWatched') {
+        return 'Delete matching episodes individually, except the latest episode watched by the users included in this rule'
+    }
+
     return ''
 }
 
@@ -1176,6 +1189,10 @@ function episodeScopeClause(filters) {
 
     if (filters.KeepSeriesKind === 'Last') {
         return 'excluding the latest episode in each series, whether or not it matches this rule'
+    }
+
+    if (filters.KeepSeriesKind === 'LatestWatched') {
+        return 'excluding the latest episode watched by the users included in the rule'
     }
 
     return ''
@@ -1349,6 +1366,11 @@ function normalizeRule(rule) {
 
     if (!isEpisodeOnly(normalized)) {
         normalized.Filters.DeleteEpisodes = 'Episode'
+        normalized.Filters.KeepSeriesKind = 'None'
+    }
+
+    if (normalized.Filters.KeepSeriesKind === 'LatestWatched'
+        && normalized.Filters.DeleteEpisodes !== 'Episode') {
         normalized.Filters.KeepSeriesKind = 'None'
     }
 
@@ -1532,7 +1554,7 @@ function optionLabel(field, value) {
         LocationsMode: { Include: 'Only selected locations', Exclude: 'All locations except selected' },
         TagFilterMode: { Inclusion: 'Require any listed tag', Exclusion: 'Exclude any listed tag' },
         DeleteEpisodes: { Episode: 'Matching episodes individually', Season: 'Complete seasons', Series: 'Complete series', SeriesEnded: 'Complete ended series' },
-        KeepSeriesKind: { None: 'No exception', First: 'Keep the first in the series', Last: 'Keep the latest in the series' },
+        KeepSeriesKind: { None: 'No exception', First: 'Keep the first in the series', Last: 'Keep the latest in the series', LatestWatched: 'Keep the latest watched episode' },
     }
 
     return labels[field] && labels[field][value] ? labels[field][value] : labelFor(value)

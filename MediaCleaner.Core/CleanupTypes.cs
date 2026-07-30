@@ -36,6 +36,7 @@ public enum SeriesKeepKind
     None,
     First,
     Last,
+    LatestWatched,
 }
 
 public enum LocationsListMode
@@ -169,6 +170,11 @@ public readonly record struct PlaybackState(
     string? UserName = null,
     bool HasUserData = true);
 
+public readonly record struct SeriesPlaybackAnchor(
+    string EpisodeId,
+    string UserId,
+    DateTime LastPlayedDate);
+
 public sealed record MediaItem(
     string Id,
     MediaItemKind Kind,
@@ -194,7 +200,8 @@ public sealed record MediaItem(
     string? FirstEpisodeId = null,
     string? LastEpisodeId = null,
     string? FirstSeasonId = null,
-    string? LastSeasonId = null);
+    string? LastSeasonId = null,
+    IReadOnlyList<SeriesPlaybackAnchor>? LatestWatchedEpisodes = null);
 
 public sealed record CleanupRequest(
     CleanupPolicy Policy,

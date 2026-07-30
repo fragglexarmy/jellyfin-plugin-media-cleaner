@@ -252,6 +252,291 @@ public class CleanupPlannerTests
     }
 
     [Fact]
+    public void Plan_KeepsLatestWatchedEpisodeAcrossTheCompleteSeries()
+    {
+        var rule = Rule(MediaItemKind.Episode, CleanupRuleTriggerKind.Played, 10) with
+        {
+            Filters = Filters(MediaItemKind.Episode) with
+            {
+                DeleteEpisodes = SeriesDeleteKind.Episode,
+                KeepSeriesKind = SeriesKeepKind.LatestWatched,
+            },
+        };
+        var older = Episode("e1", "s1", "show1", Playback("u1", Now.AddDays(-30), true));
+        var latest = Episode("e2", "s1", "show1", Playback("u1", Now.AddDays(-20), true));
+        var series = Series("show1", ["e1", "e2"]) with
+        {
+            LatestWatchedEpisodes = [new("e2", "u1", Now.AddDays(-20))],
+        };
+
+        var plan = Planner().Plan(new CleanupRequest(Policy(rule), [User("u1")], [older, latest, series], true));
+
+        plan.Decisions.Should().ContainSingle(x => x.Item.Id == "e1");
+        plan.AuditEntries.Should().Contain(x =>
+            x.ItemId == "e2"
+            && x.Stage == CleanupAuditStage.SeriesPolicy
+            && x.Outcome == CleanupAuditOutcome.Rejected
+            && x.Reason.Contains("latest watched"));
+    }
+
+    [Fact]
+    public void Plan_LatestWatchedUsesEpisodeThatDidNotMatchTheCleanupRule()
+    {
+        var rule = Rule(MediaItemKind.Episode, CleanupRuleTriggerKind.Played, 10) with
+        {
+            Filters = Filters(MediaItemKind.Episode) with
+            {
+                DeleteEpisodes = SeriesDeleteKind.Episode,
+                KeepSeriesKind = SeriesKeepKind.LatestWatched,
+            },
+        };
+        var expired = Episode("e1", "s1", "show1", Playback("u1", Now.AddDays(-30), true));
+        var series = Series("show1", ["e1", "e2"]) with
+        {
+            LatestWatchedEpisodes = [new("e2", "u1", Now.AddDays(-1))],
+        };
+
+        var plan = Planner().Plan(new CleanupRequest(Policy(rule), [User("u1")], [expired, series], true));
+
+        plan.Decisions.Should().ContainSingle(x => x.Item.Id == "e1");
+        plan.AuditEntries.Should().Contain(x =>
+            x.ItemId == null
+            && x.Stage == CleanupAuditStage.SeriesPolicy
+            && x.Outcome == CleanupAuditOutcome.Skipped
+            && x.Reason.Contains("'e2'")
+            && x.Reason.Contains("did not match"));
+    }
+
+    [Fact]
+    public void Plan_UsesRulePlaybackUsersForLatestWatchedEpisode()
+    {
+        var rule = Rule(MediaItemKind.Episode, CleanupRuleTriggerKind.Played, 10) with
+        {
+            Filters = Filters(MediaItemKind.Episode) with
+            {
+                UserIds = ["u1"],
+                UsersMode = UsersListMode.Acknowledge,
+                DeleteEpisodes = SeriesDeleteKind.Episode,
+                KeepSeriesKind = SeriesKeepKind.LatestWatched,
+            },
+        };
+        var first = Episode(
+            "e1",
+            "s1",
+            "show1",
+            Playback("u1", Now.AddDays(-30), true),
+            Playback("u2", Now.AddDays(-11), true));
+        var latestForIncludedUser = Episode(
+            "e2",
+            "s1",
+            "show1",
+            Playback("u1", Now.AddDays(-20), true));
+        var series = Series("show1", ["e1", "e2"]) with
+        {
+            LatestWatchedEpisodes =
+            [
+                new("e2", "u1", Now.AddDays(-20)),
+                new("e1", "u2", Now.AddDays(-11)),
+            ],
+        };
+
+        var plan = Planner().Plan(new CleanupRequest(
+            Policy(rule),
+            [User("u1"), User("u2")],
+            [first, latestForIncludedUser, series],
+            false));
+
+        plan.Decisions.Should().ContainSingle(x => x.Item.Id == "e1");
+    }
+
+    [Fact]
+    public void Plan_LatestWatchedUsesCompactSummaryWithoutSiblingEpisodeSnapshots()
+    {
+        var rule = Rule(MediaItemKind.Episode, CleanupRuleTriggerKind.Played, 10) with
+        {
+            Filters = Filters(MediaItemKind.Episode) with
+            {
+                DeleteEpisodes = SeriesDeleteKind.Episode,
+                KeepSeriesKind = SeriesKeepKind.LatestWatched,
+            },
+        };
+        var episode = Episode("e1", "s1", "show1", Playback("u1", Now.AddDays(-20), true));
+        var series = Series("show1", ["e1", "missing"]) with
+        {
+            LatestWatchedEpisodes = [new("missing", "u1", Now.AddDays(-10))],
+        };
+
+        var plan = Planner().Plan(new CleanupRequest(Policy(rule), [User("u1")], [episode, series], true));
+
+        plan.Decisions.Should().ContainSingle(x => x.Item.Id == "e1");
+        plan.AuditEntries.Should().Contain(x =>
+            x.ItemId == null
+            && x.Stage == CleanupAuditStage.SeriesPolicy
+            && x.Outcome == CleanupAuditOutcome.Skipped
+            && x.Reason.Contains("'missing'"));
+    }
+
+    [Fact]
+    public void Plan_BlocksLatestWatchedPolicyWhenSeriesMetadataIsUnavailable()
+    {
+        var rule = Rule(MediaItemKind.Episode, CleanupRuleTriggerKind.Played, 10) with
+        {
+            Filters = Filters(MediaItemKind.Episode) with
+            {
+                DeleteEpisodes = SeriesDeleteKind.Episode,
+                KeepSeriesKind = SeriesKeepKind.LatestWatched,
+            },
+        };
+        var episode = Episode("e1", "s1", "show1", Playback("u1", Now.AddDays(-20), true)) with { SeriesId = null };
+
+        var plan = Planner().Plan(new CleanupRequest(Policy(rule), [User("u1")], [episode], true));
+
+        plan.Decisions.Should().BeEmpty();
+        plan.AuditEntries.Should().Contain(x =>
+            x.ItemId == "e1"
+            && x.Stage == CleanupAuditStage.SeriesPolicy
+            && x.Outcome == CleanupAuditOutcome.Blocked
+            && x.Reason.Contains("series playback summary is unavailable"));
+    }
+
+    [Fact]
+    public void Plan_BlocksLatestWatchedPolicyWhenIncludedUsersHaveNoPlaybackHistory()
+    {
+        var rule = Rule(MediaItemKind.Episode, CleanupRuleTriggerKind.AddedAge, 10) with
+        {
+            Filters = Filters(MediaItemKind.Episode) with
+            {
+                DeleteEpisodes = SeriesDeleteKind.Episode,
+                KeepSeriesKind = SeriesKeepKind.LatestWatched,
+            },
+        };
+        var episode = Episode("e1", "s1", "show1");
+        var series = Series("show1", ["e1"]) with { LatestWatchedEpisodes = [] };
+
+        var plan = Planner().Plan(new CleanupRequest(Policy(rule), [User("u1"), User("u2")], [episode, series], true));
+
+        plan.Decisions.Should().BeEmpty();
+        plan.AuditEntries.Should().Contain(x =>
+            x.ItemId == "e1"
+            && x.Stage == CleanupAuditStage.SeriesPolicy
+            && x.Outcome == CleanupAuditOutcome.Blocked
+            && x.Reason.Contains("none of the included users has playback history"));
+    }
+
+    [Fact]
+    public void Plan_KeepsAllEpisodesTiedForLatestWatched()
+    {
+        var rule = Rule(MediaItemKind.Episode, CleanupRuleTriggerKind.AddedAge, 10) with
+        {
+            Filters = Filters(MediaItemKind.Episode) with
+            {
+                DeleteEpisodes = SeriesDeleteKind.Episode,
+                KeepSeriesKind = SeriesKeepKind.LatestWatched,
+            },
+        };
+        var tiedDate = Now.AddDays(-20);
+        var first = Episode("e1", "s1", "show1", Playback("u1", tiedDate, true));
+        var second = Episode("e2", "s1", "show1", Playback("u2", tiedDate, true));
+        var series = Series("show1", ["e1", "e2"]) with
+        {
+            LatestWatchedEpisodes =
+            [
+                new("e1", "u1", tiedDate),
+                new("e2", "u2", tiedDate),
+            ],
+        };
+
+        var plan = Planner().Plan(new CleanupRequest(Policy(rule), [], [first, second, series], false));
+
+        plan.Decisions.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Plan_BlocksInvalidLatestWatchedSeasonCombinationInsteadOfThrowing()
+    {
+        var rule = Rule(MediaItemKind.Episode, CleanupRuleTriggerKind.Played, 10) with
+        {
+            Filters = Filters(MediaItemKind.Episode) with
+            {
+                DeleteEpisodes = SeriesDeleteKind.Season,
+                KeepSeriesKind = SeriesKeepKind.LatestWatched,
+            },
+        };
+        var episode = Episode("e1", "s1", "show1", Playback("u1", Now.AddDays(-20), true));
+
+        var plan = Planner().Plan(new CleanupRequest(Policy(rule), [User("u1")], [episode], true));
+
+        plan.Decisions.Should().BeEmpty();
+        plan.AuditEntries.Should().Contain(x =>
+            x.ItemId == "e1"
+            && x.Stage == CleanupAuditStage.SeriesPolicy
+            && x.Outcome == CleanupAuditOutcome.Blocked
+            && x.Reason.Contains("only valid for individual episode deletion"));
+    }
+
+    [Fact]
+    public void Plan_RejectsUnknownEpisodeExceptionKind()
+    {
+        var rule = Rule(MediaItemKind.Episode, CleanupRuleTriggerKind.Played, 10) with
+        {
+            Filters = Filters(MediaItemKind.Episode) with
+            {
+                DeleteEpisodes = SeriesDeleteKind.Episode,
+                KeepSeriesKind = (SeriesKeepKind)999,
+            },
+        };
+        var episode = Episode("e1", "s1", "show1", Playback("u1", Now.AddDays(-20), true));
+
+        var act = () => Planner().Plan(new CleanupRequest(Policy(rule), [User("u1")], [episode], false));
+
+        act.Should().Throw<NotSupportedException>().WithMessage("*Unsupported series keep kind*");
+    }
+
+    [Fact]
+    public void Plan_ProtectsCurrentlyWatchedMediaFromEveryCleanupTrigger()
+    {
+        var rule = Rule(MediaItemKind.Movie, CleanupRuleTriggerKind.AddedAge, 10);
+        var movie = Movie("m1", Playback("u1", Now.AddDays(-20), false, isWatching: true));
+
+        var plan = Planner().Plan(new CleanupRequest(Policy(rule), [User("u1")], [movie], true));
+
+        plan.Decisions.Should().BeEmpty();
+        plan.Deletions.Should().BeEmpty();
+        plan.AuditEntries.Should().Contain(x =>
+            x.ItemId == "m1"
+            && x.Stage == CleanupAuditStage.Protection
+            && x.Outcome == CleanupAuditOutcome.Protected
+            && x.Reason.Contains("currently being watched"));
+    }
+
+    [Fact]
+    public void Plan_CurrentlyWatchedEpisodeBlocksSeasonCascade()
+    {
+        var rule = Rule(MediaItemKind.Episode, CleanupRuleTriggerKind.AddedAge, 10) with
+        {
+            Filters = Filters(MediaItemKind.Episode) with { DeleteEpisodes = SeriesDeleteKind.Season },
+        };
+        var watching = Episode("e1", "s1", "show1", Playback("u1", Now.AddDays(-20), false, isWatching: true));
+        var other = Episode("e2", "s1", "show1");
+        var season = Season("s1", "show1", ["e1", "e2"]);
+        var series = Series("show1", ["e1", "e2"]) with { SeasonIds = ["s1"] };
+
+        var plan = Planner().Plan(new CleanupRequest(
+            Policy(rule),
+            [User("u1")],
+            [watching, other, season, series],
+            true));
+
+        plan.Decisions.Should().ContainSingle(x => x.Item.Id == "s1");
+        plan.Deletions.Should().BeEmpty();
+        plan.AuditEntries.Should().Contain(x =>
+            x.ItemId == "s1"
+            && x.Stage == CleanupAuditStage.DeletionCascade
+            && x.Outcome == CleanupAuditOutcome.Blocked
+            && x.Reason.Contains("protected item"));
+    }
+
+    [Fact]
     public void Plan_ExplainsLatestCatalogEpisodeException_WhenLatestEpisodeDoesNotMatchRule()
     {
         var rule = Rule(MediaItemKind.Episode, CleanupRuleTriggerKind.Played, 10) with
@@ -367,6 +652,7 @@ public class CleanupPlannerTests
         var result = SeriesPolicyEvaluator.Apply(
             [candidate],
             rule,
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase),
             audit,
             new Dictionary<string, MediaItem>(StringComparer.OrdinalIgnoreCase)).ToList();
 

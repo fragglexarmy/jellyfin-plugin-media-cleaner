@@ -130,7 +130,7 @@ internal sealed class CleanupRuleMatcher(DateTime now, IPathMatcher pathMatcher,
             filtered.Add(candidate);
         }
 
-        foreach (var item in SeriesPolicyEvaluator.Apply(filtered, rule, audit, catalog.ItemsById))
+        foreach (var item in SeriesPolicyEvaluator.Apply(filtered, rule, context.UserIds, audit, catalog.ItemsById))
         {
             yield return new RuleMatch(rule, item.Item, CleanupRuleKinds.ToExpiredKind(rule.Trigger.Kind), item.Playback);
         }
@@ -167,7 +167,7 @@ internal sealed class CleanupRuleMatcher(DateTime now, IPathMatcher pathMatcher,
             }
         }
 
-        foreach (var item in SeriesPolicyEvaluator.Apply(filtered, rule, audit, itemsById))
+        foreach (var item in SeriesPolicyEvaluator.Apply(filtered, rule, context.UserIds, audit, itemsById))
         {
             yield return new RuleMatch(rule, item.Item, CleanupRuleKinds.ToExpiredKind(rule.Trigger.Kind), item.Playback);
         }

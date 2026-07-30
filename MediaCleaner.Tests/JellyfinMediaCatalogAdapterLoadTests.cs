@@ -65,6 +65,53 @@ public class JellyfinMediaCatalogAdapterLoadTests
         userData.TotalCalls.Should().Be(users.Count * catalog.Items.Count, "candidate checks and playback snapshots should share user-data cache entries");
     }
 
+    [Fact(Timeout = 15_000)]
+    public async Task Create_SparseLatestWatchedRule_DoesNotExpandSiblingEpisodesIntoCatalog()
+    {
+        var users = Enumerable.Range(0, 3).Select(CreateUser).ToList();
+        var libraryManager = new Mock<ILibraryManager>();
+        var library = TestLibrary.Create(libraryManager.Object);
+        var userData = new CountingUserDataManager(users, library.AllItems);
+        foreach (var user in users)
+        {
+            foreach (var episode in library.Episodes)
+            {
+                userData.Set(user, episode, null);
+            }
+        }
+
+        foreach (var episodes in library.EpisodesBySeriesId.Values)
+        {
+            userData.Set(users[0], episodes[0], PlayedData(Now.AddDays(-30)));
+        }
+
+        var hierarchy = new CountingTvHierarchyProvider(library);
+        var itemQueries = new Dictionary<(BaseItemKind Kind, string UserId, ItemSortBy SortBy), int>();
+        SetupUsers(libraryManager, users);
+        SetupLibrary(libraryManager, library, itemQueries);
+        var adapter = new JellyfinMediaCatalogAdapter(
+            NullLogger<JellyfinMediaCatalogAdapter>.Instance,
+            CreateUserManager(users),
+            libraryManager.Object,
+            userData.Manager,
+            hierarchy);
+
+        var catalog = await Task.Run(() => adapter.Create(new CleanupPolicy(
+            [EpisodeRule("latest-watched", CleanupRuleTriggerKind.Played, 10, SeriesKeepKind.LatestWatched)],
+            AllowDeleteIfPlayedBeforeAdded: false), CancellationToken.None));
+
+        catalog.Items.Count(x => x.Kind == MediaItemKind.Episode).Should().Be(ProgramCount);
+        catalog.Items.Count(x => x.Kind == MediaItemKind.Season).Should().Be(ProgramCount);
+        catalog.Items.Count(x => x.Kind == MediaItemKind.Series).Should().Be(ProgramCount);
+        catalog.Items.Where(x => x.Kind == MediaItemKind.Series)
+            .Should().OnlyContain(x => x.LatestWatchedEpisodes!.Count == 1);
+        adapter.SourceItemInspectionCount.Should().Be(users.Count * EpisodeCount);
+        hierarchy.SeriesEpisodeCalls.Values.Sum().Should().Be(ProgramCount);
+        userData.TotalCalls.Should().Be(
+            users.Count * (EpisodeCount + (ProgramCount * 2)),
+            "latest playback should reuse episode user-data reads and only add compact season/series snapshots");
+    }
+
     [Fact]
     public void Create_OrdersEpisodeExceptionAnchorsByEpisodeMetadata()
     {
@@ -120,6 +167,39 @@ public class JellyfinMediaCatalogAdapterLoadTests
 
         catalog.Items.Where(x => x.Kind == MediaItemKind.Episode).Should().OnlyContain(x =>
             x.FirstEpisodeId == null && x.LastEpisodeId == null);
+    }
+
+    [Fact]
+    public void Create_LatestWatchedStoresCompactSeriesPlaybackSummary()
+    {
+        var user = CreateUser(0);
+        var libraryManager = new Mock<ILibraryManager>();
+        var library = TestLibrary.Create(libraryManager.Object, programCount: 1, episodeCount: 2);
+        var userData = new CountingUserDataManager([user], library.AllItems);
+        userData.Set(user, library.Episodes[1], null);
+        SetupUsers(libraryManager, [user]);
+        SetupLibrary(
+            libraryManager,
+            library,
+            new Dictionary<(BaseItemKind Kind, string UserId, ItemSortBy SortBy), int>());
+        var adapter = new JellyfinMediaCatalogAdapter(
+            NullLogger<JellyfinMediaCatalogAdapter>.Instance,
+            CreateUserManager([user]),
+            libraryManager.Object,
+            userData.Manager,
+            new CountingTvHierarchyProvider(library));
+
+        var catalog = adapter.Create(new CleanupPolicy(
+            [EpisodeRule("keep-latest-watched", CleanupRuleTriggerKind.Played, 10, SeriesKeepKind.LatestWatched)],
+            AllowDeleteIfPlayedBeforeAdded: false), CancellationToken.None);
+
+        catalog.Items.Count(x => x.Kind == MediaItemKind.Episode).Should().Be(1);
+        var episodeSnapshot = catalog.Items.Single(x => x.Kind == MediaItemKind.Episode);
+        episodeSnapshot.FirstEpisodeId.Should().BeNull();
+        episodeSnapshot.LastEpisodeId.Should().BeNull();
+        catalog.Items.Single(x => x.Kind == MediaItemKind.Series)
+            .LatestWatchedEpisodes.Should().ContainSingle()
+            .Which.EpisodeId.Should().Be(library.Episodes[0].Id.ToString("N"));
     }
 
     [Fact]

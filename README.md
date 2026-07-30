@@ -27,7 +27,7 @@ Each rule has:
 * optional filters for playback users, favorite state, favorite users, library locations and tags;
 * an action: delete or protect.
 
-For episode cleanup rules, the deletion scope controls whether Media Cleaner deletes matching episodes individually, complete seasons, complete series, or complete ended series. Episode and season scopes can keep the first or latest item in the entire series as an exception, even when that item does not match the rule. Cleanup is blocked when the configured exception cannot be identified safely.
+For episode cleanup rules, the deletion scope controls whether Media Cleaner deletes matching episodes individually, complete seasons, complete series, or complete ended series. Episode and season scopes can keep the first or latest item in the entire series as an exception, even when that item does not match the rule. Individual-episode cleanup can instead keep the episode most recently watched by the users included in that rule. Cleanup is blocked when the configured exception cannot be identified safely.
 
 Played cleanup can require playback by at least one user, the most recent play by any user, or every user. Not-played cleanup can ignore older playback history so old watches do not keep new imports forever.
 
@@ -50,7 +50,7 @@ Saving Media Cleaner settings does not delete anything immediately. Actual delet
 
 Its default trigger is once per day, but the exact run time, custom triggers, manual runs and disabled state are controlled by Jellyfin's **Scheduled Tasks** page, not by Media Cleaner's rule editor.
 
-On each task run, Media Cleaner loads the current rules, scans the Jellyfin library, builds a cleanup plan, applies protection rules and cascade safety checks, then executes the planned delete operations. If no cleanup rule matches, no item is deleted.
+On each task run, Media Cleaner loads the current rules, scans the Jellyfin library, builds a cleanup plan, applies protection rules and cascade safety checks, then executes the planned delete operations. Media currently being watched is always protected, including from season and series cascades. If no cleanup rule matches, no item is deleted.
 
 The **Troubleshooting** report uses the same planning path in dry-run mode. It shows what would be deleted by a real scheduled-task run, but the report itself does not delete or modify media.
 

@@ -9,6 +9,7 @@ internal static class SeriesPolicyEvaluator
     public static IEnumerable<CandidateItem> Apply(
         IEnumerable<CandidateItem> candidates,
         CleanupRule rule,
+        ISet<string> playbackUserIds,
         CleanupAuditCollector audit,
         IReadOnlyDictionary<string, MediaItem> catalogById)
     {
@@ -30,9 +31,26 @@ internal static class SeriesPolicyEvaluator
             yield break;
         }
 
+        if (rule.Filters.KeepSeriesKind == SeriesKeepKind.LatestWatched
+            && rule.Filters.DeleteEpisodes != SeriesDeleteKind.Episode)
+        {
+            foreach (var episode in episodes)
+            {
+                CleanupAudit.AddItem(
+                    audit,
+                    episode.Item,
+                    rule,
+                    CleanupAuditStage.SeriesPolicy,
+                    CleanupAuditOutcome.Blocked,
+                    $"delete blocked because the latest watched exception is only valid for individual episode deletion");
+            }
+
+            yield break;
+        }
+
         var seriesItems = rule.Filters.DeleteEpisodes switch
         {
-            SeriesDeleteKind.Episode => KeepEpisodes(episodes, rule, audit),
+            SeriesDeleteKind.Episode => KeepEpisodes(episodes, rule, playbackUserIds, audit, catalogById),
             SeriesDeleteKind.Season => BuildSeasonCandidates(episodes, rule, audit, catalogById),
             SeriesDeleteKind.Series => BuildSeriesCandidates(episodes, rule, audit, catalogById, requireEnded: false),
             SeriesDeleteKind.SeriesEnded => BuildSeriesCandidates(episodes, rule, audit, catalogById, requireEnded: true),
@@ -48,11 +66,23 @@ internal static class SeriesPolicyEvaluator
     private static IEnumerable<CandidateItem> KeepEpisodes(
         IEnumerable<CandidateItem> items,
         CleanupRule rule,
-        CleanupAuditCollector audit)
+        ISet<string> playbackUserIds,
+        CleanupAuditCollector audit,
+        IReadOnlyDictionary<string, MediaItem> catalogById)
     {
         if (rule.Filters.KeepSeriesKind == SeriesKeepKind.None)
         {
             foreach (var item in items)
+            {
+                yield return item;
+            }
+
+            yield break;
+        }
+
+        if (rule.Filters.KeepSeriesKind == SeriesKeepKind.LatestWatched)
+        {
+            foreach (var item in KeepLatestWatchedEpisodes(items, rule, playbackUserIds, audit, catalogById))
             {
                 yield return item;
             }
@@ -125,6 +155,101 @@ internal static class SeriesPolicyEvaluator
                     CleanupAuditOutcome.Skipped,
                     $"series policy keeps the {boundaryName} episode '{boundaryId}' in series '{group.Key}'; that episode did not match this rule");
             }
+        }
+    }
+
+    private static IEnumerable<CandidateItem> KeepLatestWatchedEpisodes(
+        IEnumerable<CandidateItem> items,
+        CleanupRule rule,
+        ISet<string> playbackUserIds,
+        CleanupAuditCollector audit,
+        IReadOnlyDictionary<string, MediaItem> catalogById)
+    {
+        foreach (var group in items.GroupBy(x => x.Item.SeriesId ?? x.Item.Id))
+        {
+            var groupItems = group.ToList();
+            if (!catalogById.TryGetValue(group.Key, out var series)
+                || series.Kind != MediaItemKind.Series
+                || series.LatestWatchedEpisodes is null)
+            {
+                AddLatestWatchedBlockedAudit(
+                    groupItems,
+                    rule,
+                    audit,
+                    group.Key,
+                    "the series playback summary is unavailable");
+                continue;
+            }
+
+            var includedAnchors = series.LatestWatchedEpisodes
+                .Where(x => playbackUserIds.Count == 0 || playbackUserIds.Contains(x.UserId))
+                .ToList();
+            var latestPlayedDate = includedAnchors
+                .Select(x => x.LastPlayedDate)
+                .DefaultIfEmpty()
+                .Max();
+            if (latestPlayedDate == default)
+            {
+                AddLatestWatchedBlockedAudit(
+                    groupItems,
+                    rule,
+                    audit,
+                    group.Key,
+                    "none of the included users has playback history");
+                continue;
+            }
+
+            var latestEpisodeIds = includedAnchors
+                .Where(x => x.LastPlayedDate == latestPlayedDate)
+                .Select(x => x.EpisodeId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var keptCandidate = false;
+            foreach (var item in groupItems)
+            {
+                if (latestEpisodeIds.Contains(item.Item.Id))
+                {
+                    keptCandidate = true;
+                    CleanupAudit.AddItem(
+                        audit,
+                        item.Item,
+                        rule,
+                        CleanupAuditStage.SeriesPolicy,
+                        CleanupAuditOutcome.Rejected,
+                        $"rejected by series policy because episode '{item.Item.Id}' is the latest watched episode in series '{group.Key}'");
+                    continue;
+                }
+
+                yield return item;
+            }
+
+            if (!keptCandidate)
+            {
+                CleanupAudit.AddRule(
+                    audit,
+                    rule,
+                    CleanupAuditStage.SeriesPolicy,
+                    CleanupAuditOutcome.Skipped,
+                    $"series policy keeps latest watched episode '{string.Join(", ", latestEpisodeIds)}' in series '{group.Key}'; that episode did not match this rule");
+            }
+        }
+    }
+
+    private static void AddLatestWatchedBlockedAudit(
+        IEnumerable<CandidateItem> items,
+        CleanupRule rule,
+        CleanupAuditCollector audit,
+        string seriesId,
+        string reason)
+    {
+        foreach (var item in items)
+        {
+            CleanupAudit.AddItem(
+                audit,
+                item.Item,
+                rule,
+                CleanupAuditStage.SeriesPolicy,
+                CleanupAuditOutcome.Blocked,
+                $"delete blocked by series policy because the latest watched episode in series '{seriesId}' could not be determined: {reason}");
         }
     }
 

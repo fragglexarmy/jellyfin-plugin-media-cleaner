@@ -323,6 +323,9 @@ internal sealed class JellyfinMediaCatalogAdapter(
         var seasonOrderIds = kind == MediaItemKind.Episode && series is not null && snapshot.NeedsSeasonOrderIds
             ? snapshot.GetSeriesSeasonOrderIds(series)
             : null;
+        var latestWatchedEpisodes = kind == MediaItemKind.Series && series is not null && snapshot.NeedsLatestWatchedEpisodes
+            ? snapshot.GetLatestWatchedEpisodes(series)
+            : null;
 
         return new MediaItem(
             Id: id,
@@ -352,7 +355,8 @@ internal sealed class JellyfinMediaCatalogAdapter(
             FirstEpisodeId: episodeOrderIds?.FirstOrDefault(),
             LastEpisodeId: episodeOrderIds?.LastOrDefault(),
             FirstSeasonId: seasonOrderIds?.FirstOrDefault(),
-            LastSeasonId: seasonOrderIds?.LastOrDefault());
+            LastSeasonId: seasonOrderIds?.LastOrDefault(),
+            LatestWatchedEpisodes: latestWatchedEpisodes);
     }
 
     private PlaybackState CreatePlaybackState(JellyfinUser user, BaseItem item, SnapshotContext snapshot)
@@ -607,6 +611,7 @@ internal sealed class JellyfinMediaCatalogAdapter(
         private readonly Dictionary<string, IReadOnlyList<string>> seriesSeasonIds = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, IReadOnlyList<string>> seriesEpisodeOrderIds = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, IReadOnlyList<string>> seriesSeasonOrderIds = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, IReadOnlyList<SeriesPlaybackAnchor>> latestWatchedEpisodes = new(StringComparer.OrdinalIgnoreCase);
 
         public SnapshotContext(
             IReadOnlyList<JellyfinUser> users,
@@ -635,7 +640,19 @@ internal sealed class JellyfinMediaCatalogAdapter(
             NeedsSeriesSeasonIds = enabledEpisodeRules.Count > 0;
             NeedsEpisodeOrderIds = enabledEpisodeRules.Any(rule =>
                 rule.Filters.DeleteEpisodes == SeriesDeleteKind.Episode
-                && rule.Filters.KeepSeriesKind != SeriesKeepKind.None);
+                && rule.Filters.KeepSeriesKind is SeriesKeepKind.First or SeriesKeepKind.Last);
+            NeedsLatestWatchedEpisodes = enabledEpisodeRules.Any(rule =>
+                rule.Filters.DeleteEpisodes == SeriesDeleteKind.Episode
+                && rule.Filters.KeepSeriesKind == SeriesKeepKind.LatestWatched);
+            var latestWatchedRules = enabledEpisodeRules
+                .Where(rule => rule.Filters.DeleteEpisodes == SeriesDeleteKind.Episode
+                    && rule.Filters.KeepSeriesKind == SeriesKeepKind.LatestWatched)
+                .ToList();
+            var latestWatchedUserIds = latestWatchedRules
+                .SelectMany(rule => FilterUsersForRule(users, rule))
+                .Select(user => user.Id)
+                .ToHashSet();
+            LatestWatchedUsers = users.Where(user => latestWatchedUserIds.Contains(user.Id)).ToList();
             NeedsSeasonOrderIds = enabledEpisodeRules.Any(rule =>
                 rule.Filters.DeleteEpisodes == SeriesDeleteKind.Season
                 && rule.Filters.KeepSeriesKind != SeriesKeepKind.None);
@@ -648,6 +665,8 @@ internal sealed class JellyfinMediaCatalogAdapter(
 
         public IReadOnlyList<JellyfinUser> Users { get; }
 
+        public IReadOnlyList<JellyfinUser> LatestWatchedUsers { get; }
+
         public bool NeedsSeasonEpisodeIds { get; }
 
         public bool NeedsSeriesEpisodeIds { get; }
@@ -655,6 +674,8 @@ internal sealed class JellyfinMediaCatalogAdapter(
         public bool NeedsSeriesSeasonIds { get; }
 
         public bool NeedsEpisodeOrderIds { get; }
+
+        public bool NeedsLatestWatchedEpisodes { get; }
 
         public bool NeedsSeasonOrderIds { get; }
 
@@ -771,6 +792,48 @@ internal sealed class JellyfinMediaCatalogAdapter(
                 seriesEpisodeIds,
                 GetItemId(series),
                 () => GetSeriesEpisodes(series).Select(GetItemId).ToList());
+
+        public IReadOnlyList<SeriesPlaybackAnchor> GetLatestWatchedEpisodes(Series series)
+        {
+            var seriesId = GetItemId(series);
+            if (latestWatchedEpisodes.TryGetValue(seriesId, out var cached))
+            {
+                return cached;
+            }
+
+            var episodes = GetSeriesEpisodes(series);
+            var anchors = new List<SeriesPlaybackAnchor>();
+            foreach (var user in LatestWatchedUsers)
+            {
+                DateTime? latestDate = null;
+                var latestEpisodeIds = new List<string>();
+                foreach (var episode in episodes)
+                {
+                    var playedDate = GetUserData(user, episode)?.LastPlayedDate;
+                    if (!playedDate.HasValue || (latestDate.HasValue && playedDate < latestDate))
+                    {
+                        continue;
+                    }
+
+                    if (!latestDate.HasValue || playedDate > latestDate)
+                    {
+                        latestDate = playedDate;
+                        latestEpisodeIds.Clear();
+                    }
+
+                    latestEpisodeIds.Add(GetItemId(episode));
+                }
+
+                if (latestDate.HasValue)
+                {
+                    anchors.AddRange(latestEpisodeIds.Select(episodeId =>
+                        new SeriesPlaybackAnchor(episodeId, GetUserId(user), latestDate.Value)));
+                }
+            }
+
+            latestWatchedEpisodes[seriesId] = anchors;
+            return anchors;
+        }
 
         public IReadOnlyList<string> GetSeriesSeasonIds(Series series) =>
             GetOrAddIds(

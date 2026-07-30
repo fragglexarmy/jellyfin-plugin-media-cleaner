@@ -276,4 +276,29 @@ public class PluginConfigurationMapperTests
         rule.Filters.FavoriteFilter.Should().Be(MediaCleaner.Core.RuleFavoriteFilterKind.FavoriteByAllUsers);
         rule.Actions.Kind.Should().Be(MediaCleaner.Core.CleanupRuleActionKind.Protect);
     }
+
+    [Fact]
+    public void ToCleanupPolicy_MapsLatestWatchedEpisodeException()
+    {
+        var config = new PluginConfiguration
+        {
+            ConfigVersion = 2,
+            Rules =
+            [
+                new CleanupRuleConfiguration
+                {
+                    Id = "latest-watched",
+                    Filters = new CleanupRuleFiltersConfiguration
+                    {
+                        MediaKinds = [ConfigRuleMediaKind.Episode],
+                        DeleteEpisodes = ConfigSeriesDeleteKind.Episode,
+                        KeepSeriesKind = ConfigSeriesKeepKind.LatestWatched,
+                    },
+                },
+            ],
+        };
+
+        config.ToCleanupPolicy().Rules.Should().ContainSingle()
+            .Which.Filters.KeepSeriesKind.Should().Be(MediaCleaner.Core.SeriesKeepKind.LatestWatched);
+    }
 }
