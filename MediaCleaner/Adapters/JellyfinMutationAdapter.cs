@@ -20,7 +20,17 @@ internal sealed class JellyfinMutationAdapter(
 {
     public async Task ExecuteAsync(CleanupPlan plan, CleanupCatalog catalog, CancellationToken cancellationToken)
     {
+        var plannedDeletionIds = plan.Deletions
+            .Select(operation => operation.ItemId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var successfullyDeletedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Jellyfin persists user data from MarkUnplayed, so it must run while the item still exists.
+        foreach (var decision in GetDecisionsForItemIds(plan.Decisions, plannedDeletionIds))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            MarkUnplayed(decision, catalog);
+        }
 
         foreach (var operation in plan.Deletions)
         {
@@ -42,19 +52,18 @@ internal sealed class JellyfinMutationAdapter(
             }
         }
 
-        foreach (var decision in GetSuccessfullyDeletedDecisions(plan.Decisions, successfullyDeletedIds))
+        foreach (var decision in GetDecisionsForItemIds(plan.Decisions, successfullyDeletedIds))
         {
             LogSuccessfulDeletion(decision);
             var notificationDecision = WithNotificationOverview(decision);
             await CreateNotification(notificationDecision, cancellationToken);
-            MarkUnplayed(decision, catalog);
         }
     }
 
-    internal static IEnumerable<CleanupDecision> GetSuccessfullyDeletedDecisions(
+    internal static IEnumerable<CleanupDecision> GetDecisionsForItemIds(
         IEnumerable<CleanupDecision> decisions,
-        ISet<string> successfullyDeletedIds) =>
-        decisions.Where(decision => successfullyDeletedIds.Contains(decision.Item.Id));
+        ISet<string> itemIds) =>
+        decisions.Where(decision => itemIds.Contains(decision.Item.Id));
 
     private void LogSuccessfulDeletion(CleanupDecision decision)
     {

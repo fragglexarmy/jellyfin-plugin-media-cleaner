@@ -21,7 +21,7 @@ namespace MediaCleaner.Tests;
 public class JellyfinMutationAdapterTests
 {
     [Fact]
-    public async Task ExecuteAsync_NotifiesOnlySuccessfullyDeletedDecisionsAfterDeletion()
+    public async Task ExecuteAsync_MarksOnlyPlannedDecisionsBeforeDeletionAndNotifiesOnlyAfterSuccess()
     {
         var blockedItem = Item("blocked-season", MediaItemKind.Season, "Protected season");
         var deletedItem = Item("deleted-movie", MediaItemKind.Movie, "Deleted movie");
@@ -68,7 +68,7 @@ public class JellyfinMutationAdapterTests
 
         await adapter.ExecuteAsync(plan, catalog, CancellationToken.None);
 
-        events.Should().Equal("delete", "activity", "mark-unplayed");
+        events.Should().Equal("mark-unplayed", "delete", "activity");
         activities.Should().ContainSingle();
         activities[0].Name.Should().Be(deletedDecision.Notification.Title);
         activities[0].Overview.Should().Contain("Path:");
@@ -83,7 +83,7 @@ public class JellyfinMutationAdapterTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_DoesNotNotifyWhenDeletionFails()
+    public async Task ExecuteAsync_MarksBeforeDeletionButDoesNotNotifyWhenDeletionFails()
     {
         var item = Item("failed", MediaItemKind.Movie, "Failed movie");
         var entity = new RecordingMovie { Id = Guid.NewGuid(), Name = item.Name };
@@ -109,17 +109,51 @@ public class JellyfinMutationAdapterTests
         await adapter.ExecuteAsync(plan, catalog, CancellationToken.None);
 
         activityManager.Verify(x => x.CreateAsync(It.IsAny<JellyfinActivityLog>()), Times.Never);
-        entity.MarkUnplayedCount.Should().Be(0);
+        entity.MarkUnplayedCount.Should().Be(1);
     }
 
     [Fact]
-    public void GetSuccessfullyDeletedDecisions_ExcludesBlockedAndFailedItems()
+    public async Task ExecuteAsync_DoesNotDeleteWhenMarkUnplayedFails()
+    {
+        var item = Item("failed-mark-unplayed", MediaItemKind.Movie, "Failed mark unplayed");
+        var entity = new RecordingMovie
+        {
+            Id = Guid.NewGuid(),
+            Name = item.Name,
+            MarkUnplayedCallback = () => throw new InvalidOperationException("mark unplayed failed"),
+        };
+        var user = new JellyfinUser("User", "test", "test");
+        var libraryManager = new Mock<ILibraryManager>();
+        var activityManager = new Mock<IActivityManager>();
+        var adapter = new JellyfinMutationAdapter(
+            NullLogger<JellyfinMutationAdapter>.Instance,
+            libraryManager.Object,
+            activityManager.Object);
+        var decision = Decision(item, markUnplayedUserIds: ["user"]);
+        var plan = new CleanupPlan(
+            [decision],
+            [new DeletionOperation(item.Id, item.Kind, item.Name)],
+            []);
+        var catalog = Catalog(
+            new Dictionary<string, JellyfinUser>(StringComparer.OrdinalIgnoreCase) { ["user"] = user },
+            (item.Id, entity));
+
+        var act = () => adapter.ExecuteAsync(plan, catalog, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("mark unplayed failed");
+        libraryManager.Verify(x => x.DeleteItem(entity, It.IsAny<DeleteOptions>(), true), Times.Never);
+        activityManager.Verify(x => x.CreateAsync(It.IsAny<JellyfinActivityLog>()), Times.Never);
+    }
+
+    [Fact]
+    public void GetDecisionsForItemIds_ExcludesItemsOutsideTheProvidedSet()
     {
         var blocked = Decision(Item("blocked", MediaItemKind.Season, "Blocked"), markUnplayedUserIds: ["user"]);
         var failed = Decision(Item("failed", MediaItemKind.Movie, "Failed"), markUnplayedUserIds: ["user"]);
         var deleted = Decision(Item("deleted", MediaItemKind.Movie, "Deleted"), markUnplayedUserIds: ["user"]);
 
-        var result = JellyfinMutationAdapter.GetSuccessfullyDeletedDecisions(
+        var result = JellyfinMutationAdapter.GetDecisionsForItemIds(
                 [blocked, failed, deleted],
                 new HashSet<string>(["DELETED"], StringComparer.OrdinalIgnoreCase))
             .ToList();
